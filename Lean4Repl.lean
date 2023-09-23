@@ -6,7 +6,6 @@ open Lean Lean.Meta Lean.Elab Lean.Elab.Command Lean.Elab.Tactic
 
 namespace LeanDojo
 
-
 /-- Print the response as JSON. --/
 private def printResponse {α : Type _} [ToJson α] (res : α) : IO Unit := do
   let json := (toJson res).pretty 99999999999999999
@@ -26,7 +25,7 @@ structure Request where
   /-- Tactic/command state ID on which to execute the request. -/
   sid: Nat
   /-- Tactic/command. --/
-  cmd: String
+  cmd: List String
 deriving FromJson, ToJson
 
 
@@ -209,29 +208,37 @@ private def handleRunTac (req : Request) : TacticReplM Response := do
   match ← getSavedState? TacticReplM req.sid with
   | none => throwError s!"[fatal] unknown tsid: {req.sid}"
   | some ts =>
-    match Parser.runParserCategory (← getEnv) `tactic req.cmd "<stdin>" with
-    | .error err => return {error := err}
-    | .ok stx =>
-      ts.restore
+    let mut ts_temp := ts
+    let mut success := false
+    for cmd in req.cmd do
+      match Parser.runParserCategory (← getEnv) `tactic cmd "<stdin>" with
+        | .error err => return {error := err}
+        | .ok stx =>
+        ts_temp.restore
 
-      try
-        monadLift $ commitIfNoEx (evalTactic stx)
-        let s ← getThe Core.State
-        if s.messages.hasErrors then
-          let messages := s.messages.toList.filter fun m => m.severity == MessageSeverity.error
-          return { error := join $ ← (messages.map Message.data).mapM fun md => md.toString }
-      catch ex =>
-        return {error := ← ex.toMessageData.toString}
+        try
+          monadLift $ commitIfNoEx (evalTactic stx)
+          let s ← getThe Core.State
+          if s.messages.hasErrors then
+            let messages := s.messages.toList.filter fun m => m.severity == MessageSeverity.error
+            return { error := join $ ← (messages.map Message.data).mapM fun md => md.toString }
+        catch ex =>
+          return {error := ← ex.toMessageData.toString}
 
-      pruneSolvedGoals
-      if (← getGoals).isEmpty then
+        pruneSolvedGoals
+        if (← getGoals).isEmpty then
+            success:= true
+            break
+          else
+            ts_temp ← Tactic.saveState
+    if success then
         validateProof
-      else
-        let ts' ← Tactic.saveState
-        let ts'_str ← ppTacticState ts'
-        let next_tsid ← getNextSid TacticReplM
-        insertTacticState ts'
-        return {sid := next_tsid, tacticState := ts'_str}
+    else
+      let ts_temp' ← Tactic.saveState
+      let ts'_str ← ppTacticState ts_temp'
+      let next_tsid ← getNextSid TacticReplM
+      insertTacticState ts_temp'
+      return {sid := next_tsid, tacticState := ts'_str}
 
 
 end TacticRepl
@@ -273,75 +280,8 @@ def repl : TacticM Unit := do
 
 end TacticRepl
 
-
-namespace CommandRepl
-
-
-/-- The REPL monad. --/
-abbrev CommandReplM := StateT (ReplState Command.State) CommandElabM
-
-
-instance : MonadLift IO CommandReplM where
-  monadLift x := liftM x
-
-
-/-- Insert a command state into the REPL state. --/
-private def insertCommandState (cs : Command.State) : CommandReplM Unit := do
-  modifyGet fun s => ((), ⟨s.savedStates.push cs, none⟩)
-
-
-/-- Initialize the REPL. --/
-private def initializeRepl : CommandElabM Command.State := do
-  let res : Response := {sid := some 0}
-  printResponse res
-  return (← get)
-
-
-private def handleRunCmd (req : Request) : CommandReplM Response := do
-  match ← getSavedState? CommandReplM req.sid with
-  | none => throwError s!"[fatal] unknown csid: {req.sid}"
-  | some cs =>
-    let inputCtx := Parser.mkInputContext req.cmd "<stdin>"
-    let parserState := { : Parser.ModuleParserState }
-    let cs' := (← IO.processCommands inputCtx parserState cs).commandState
-
-    -- Collect error messages and print other messages.
-    let messages := cs'.messages.toList
-    let mut errors := #[]
-    for msg in messages do
-      let s ← msg.data.toString
-      if msg.severity == MessageSeverity.error then
-        errors := errors.push s
-      else
-        println! s.trim
-    let err_msg := if errors.isEmpty then none else some (join errors.toList)
-
-    let next_csid ← getNextSid CommandReplM
-    insertCommandState cs'
-    return {sid := next_csid, error := err_msg}
-
-
-/--
-{"sid": 0, "cmd": "#eval 1"}
-{"sid": 1, "cmd": "#eval x"}
-{"sid": 0, "cmd": "def x := 1"}
-{"sid": 3, "cmd": "#eval x"}
-exit
---/
-def repl : CommandElabM Unit := do
-  let cs ← initializeRepl
-  let loop := LeanDojo.loop CommandReplM handleRunCmd
-  let _ ← loop.run {savedStates := #[cs], solvedState := none}
-  IO.Process.exit 0
-
-end CommandRepl
-
 end LeanDojo
 
 
 /-- The `lean_dojo_repl` tactic. --/
 elab "lean_dojo_repl" : tactic => LeanDojo.TacticRepl.repl
-
-
-/-- The `#lean_dojo_repl` command. --/
-elab "#lean_dojo_repl" : command => LeanDojo.CommandRepl.repl
