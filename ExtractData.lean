@@ -262,23 +262,37 @@ private def visitTermInfo (ti : TermInfo) (env : Environment) : TraceM Unit := d
     | some posInfo => fileMap.toPosition posInfo
     | none => none
 
-  let some modIdx := env.const2ModIdx.find? fullName | return ()
-  let modName := env.header.moduleNames[modIdx.toNat]!
+  match env.const2ModIdx.find? fullName with
+    | some modIdx =>
+      let modName := env.header.moduleNames[modIdx.toNat]!
 
-  let decRanges ← findDeclarationRanges? fullName
-  let defPos := decRanges >>= fun (decR : DeclarationRanges) => decR.selectionRange.pos
-  let defEndPos := decRanges >>= fun (decR : DeclarationRanges) => decR.selectionRange.endPos
+      let decRanges ← findDeclarationRanges? fullName
+      let defPos := decRanges >>= fun (decR : DeclarationRanges) => decR.selectionRange.pos
+      let defEndPos := decRanges >>= fun (decR : DeclarationRanges) => decR.selectionRange.endPos
 
-  modify fun trace => { 
-      trace with premises := trace.premises.push {
-        fullName := toString fullName,
-        defPos := defPos,
-        defEndPos := defEndPos,
-        pos := posBefore,
-        endPos := posAfter,
-        modName := toString modName,
-      }
-    }
+      modify fun trace => { 
+          trace with premises := trace.premises.push {
+            fullName := toString fullName,
+            defPos := defPos,
+            defEndPos := defEndPos,
+            pos := posBefore,
+            endPos := posAfter,
+            modName := toString modName,
+          }
+        }
+    | none => 
+      let modName := env.header.mainModule
+    
+      modify fun trace => { 
+          trace with premises := trace.premises.push {
+            fullName := toString fullName,
+            defPos := none,
+            defEndPos := none,
+            pos := posBefore,
+            endPos := posAfter,
+            modName := toString modName,
+          }
+        }  
   
 
 
