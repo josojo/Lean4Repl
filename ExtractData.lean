@@ -23,8 +23,8 @@ set_option maxHeartbeats 2000000  -- 10x the default maxHeartbeats.
 structure TacticTrace where
   stateBefore: String
   stateAfter: String
-  pos: String.Pos
-  endPos: String.Pos
+  pos: Position
+  endPos: Position
 deriving ToJson
 
 
@@ -233,8 +233,10 @@ private def visitTacticInfo (ctx : ContextInfo) (ti : TacticInfo) (parent : Info
       if stateBefore == "no goals" || stateBefore == stateAfter then
         pure ()
       else
-        let some posBefore := ti.stx.getPos? true | pure ()
-        let some posAfter := ti.stx.getTailPos? true | pure ()
+        let some posBeforeInfo := ti.stx.getPos? true | pure ()
+        let posBefore := ctx.fileMap.toPosition posBeforeInfo
+        let some posAfterInfo := ti.stx.getTailPos? true | pure ()
+        let posAfter := ctx.fileMap.toPosition posAfterInfo
         match ti.stx with
         | .node _ _ _ =>
           modify fun trace => { 
